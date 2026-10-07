@@ -1,0 +1,17 @@
+image:
+  repository: 10.0.0.230:5000/instrument-id/agent
+  tag: latest
+  pullPolicy: IfNotPresent
+intervalSeconds: 600
+apiUrl: http://instrument-id-ingester:8080/api/ingest
+apiKey: ""
+state:
+  size: 1Gi
+  storageClass: local-path
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi

@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "instrument-id-agent.fullname" . }}
+  labels: {{- include "instrument-id-agent.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {{- include "instrument-id-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "instrument-id-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        fsGroup: 10001
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: DISCOVERY_INTERVAL_SECONDS
+              value: {{ .Values.intervalSeconds | quote }}
+            - name: INSTRUMENT_ID_API_URL
+              value: {{ .Values.apiUrl | quote }}
+            - name: INSTRUMENT_ID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "instrument-id-agent.fullname" . }}
+                  key: instrument-id-api-key
+            - name: STATE_DIR
+              value: /var/lib/instrument-id-agent
+            - name: CODEX_HOME
+              value: /home/appuser/.codex
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/instrument-id-agent
+            - name: codex-auth
+              mountPath: /home/appuser/.codex/auth.json
+              subPath: auth.json
+              readOnly: true
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "instrument-id-agent.fullname" . }}
+        - name: codex-auth
+          secret:
+            secretName: {{ include "instrument-id-agent.fullname" . }}-auth
