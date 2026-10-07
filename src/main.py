@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlencode
 
 LOG = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ The source page must be the URI. Include only directly usable HTTP or HTTPS imag
 """
 
 
-def candidate(output: str) -> dict[str, object] | None:
+def candidate(output: str, allow_empty_images: bool = False) -> dict[str, object] | None:
     match = re.search(r"^DIRECT_IMPORT_JSON:\s*(.+)$", output, re.IGNORECASE | re.MULTILINE)
     if not match:
         raise RuntimeError("Codex output did not include DIRECT_IMPORT_JSON")
@@ -68,7 +69,7 @@ def candidate(output: str) -> dict[str, object] | None:
         if not isinstance(value.get(key), str) or not value[key].strip():
             raise RuntimeError(f"DIRECT_IMPORT_JSON is missing {key}")
     images = value.get("imageUrls")
-    if not isinstance(images, list) or not images or any(not isinstance(item, str) or not item.startswith(("http://", "https://")) for item in images):
+    if not isinstance(images, list) or (not images and not allow_empty_images) or any(not isinstance(item, str) or not item.startswith(("http://", "https://")) for item in images):
         raise RuntimeError("DIRECT_IMPORT_JSON must contain HTTP image URLs")
     value["imageUrls"] = list(dict.fromkeys(images))
     return value
@@ -93,19 +94,61 @@ def import_direct(settings: dict[str, object], value: dict[str, object]) -> obje
         raise RuntimeError(f"DIRECT import failed with HTTP {error.code}: {body}") from error
 
 
+def api_request(settings: dict[str, object], path: str, method: str = "GET", value: object = None) -> object:
+    if not settings["api_key"]:
+        raise RuntimeError("INSTRUMENT_ID_API_KEY is not configured")
+    base = str(settings["api_url"]).removesuffix("/api/ingest")
+    request = urllib.request.Request(
+        base + "/api" + path,
+        data=json.dumps(value).encode("utf-8") if value is not None else None,
+        headers={"Accept": "application/json", "Authorization": f"Bearer {settings['api_key']}", "Content-Type": "application/json"},
+        method=method,
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        body = response.read()
+        return json.loads(body) if body else None
+
+
+def repair_prompt(request: dict[str, object], listing: object) -> str:
+    return f"""Repair exactly this existing DIRECT listing. Use live web search and open its source page.
+Existing listing: {json.dumps(listing)}
+User repair instructions: {json.dumps(request["notes"])}
+Follow the instructions using evidence from the source. Inspect the complete image gallery and collect every unique image of this exact instrument. Do not invent facts or URLs. Preserve correct existing metadata. Images are additive: the API retains existing images and ignores duplicate URLs. Do not discover or import another listing.
+When the requested repair can be completed, finish with DIRECT_IMPORT_JSON: followed by a single JSON object:
+{{"uri":"original source URL","title":"correct listing title","description":"evidence-based description","imageUrls":["absolute HTTP image URL"]}}
+For a metadata-only repair imageUrls may be empty. If you cannot complete the instructions, finish with DIRECT_IMPORT_JSON: null; the request will remain active.
+"""
+
+
 def run_once(settings: dict[str, object]) -> None:
     state_path = Path(settings["state_dir"]) / "discovery-state.json"
     state = load_state(state_path)
+    requests = api_request(settings, "/reparation-requests")
+    if not isinstance(requests, list):
+        raise RuntimeError("Reparation request API did not return a list")
+    repair = requests[0] if requests else None
+    listing = api_request(settings, f"/listing/{repair['listingId']}") if repair else None
+    task_prompt = repair_prompt(repair, listing) if repair else prompt(state)
     with tempfile.TemporaryDirectory(dir=settings["workspace"]) as directory:
         result = subprocess.run(
-            list(settings["codex_command"]), cwd=directory, input=prompt(state), text=True,
+            list(settings["codex_command"]), cwd=directory, input=task_prompt, text=True,
             capture_output=True, check=False,
         )
     if result.returncode:
         raise RuntimeError(result.stderr[-4000:] or f"Codex exited with {result.returncode}")
-    value = candidate(result.stdout)
+    value = candidate(result.stdout, allow_empty_images=repair is not None)
     run: dict[str, object] = {"completedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-    if value is None:
+    if repair is not None:
+        run["requestId"] = repair["id"]
+        if value is None:
+            run["result"] = "repair-incomplete"
+        else:
+            run["response"] = api_request(settings, f"/listing/{repair['listingId']}", "PATCH",
+                                           {key: value[key] for key in ("title", "description", "imageUrls")})
+            query = urlencode({"expectedUpdatedAt": repair["updatedAt"]})
+            api_request(settings, f"/reparation-request/{repair['id']}?{query}", "DELETE")
+            run["result"] = "repaired"
+    elif value is None:
         run["result"] = "no-candidate"
     else:
         response = import_direct(settings, value)
@@ -130,12 +173,11 @@ def main() -> None:
     Path(settings["workspace"]).mkdir(parents=True, exist_ok=True)
     LOG.info("Instrument ID agent started; interval=%ss", settings["interval"])
     while True:
-        started = time.monotonic()
         try:
             run_once(settings)
         except Exception:
             LOG.exception("Discovery cycle failed")
-        time.sleep(max(0, float(settings["interval"]) - (time.monotonic() - started)))
+        time.sleep(float(settings["interval"]))
 
 
 if __name__ == "__main__":
