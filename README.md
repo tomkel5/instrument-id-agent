@@ -17,6 +17,16 @@ DIRECT listing. A failed request lookup never falls back to discovery. After eac
 cycle the worker waits `DISCOVERY_INTERVAL_SECONDS` (default 600) before starting
 another cycle, including when a repair fails or takes longer than ten minutes.
 
+Before every new listing discovery run, the worker reads `GET /api/config` and
+includes `AI_SEARCH_INSTRUCTIONS` in the Codex search prompt. Changes take effect
+on the next discovery run without restarting the worker. Configured instructions
+guide discovery while preserving evidence-based results, complete image galleries,
+duplicate avoidance, and the `DIRECT_IMPORT_JSON` output contract. An empty or
+whitespace-only value uses the default discovery instructions and logs at INFO;
+a missing setting uses those defaults and logs a warning. A failed config lookup
+or malformed response skips discovery for that cycle and logs the failure; the
+next cycle retries. Repairs neither read nor use this setting.
+
 `INSTRUMENT_ID_API_URL` remains the full ingestion endpoint, for example
 `http://instrument-id-ingester:8080/api/ingest`; repair endpoints are derived from
 that service URL. All API calls use `INSTRUMENT_ID_API_KEY` as a bearer credential.

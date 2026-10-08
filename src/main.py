@@ -41,8 +41,16 @@ def load_state(path: Path) -> dict[str, object]:
         return {"sources": [], "runs": []}
 
 
-def prompt(state: dict[str, object]) -> str:
+def prompt(state: dict[str, object], search_instructions: str = "") -> str:
+    configured_instructions = (
+        "\nConfigured discovery instructions (AI_SEARCH_INSTRUCTIONS):\n"
+        + search_instructions
+        + "\nThese instructions guide discovery; always preserve the evidence, complete-gallery, "
+        "duplicate-avoidance, and output requirements below.\n"
+        if search_instructions.strip() else ""
+    )
     return f"""Find one publicly accessible web page featuring a specific violin that is likely not already in the Instrument ID database.
+{configured_instructions}
 
 Use live web search. Prefer a page from a dealer, maker, auction house, or private owner over a museum or library collection. Do not invent facts, URLs, or image URLs. Open the source page and inspect its complete image gallery, including gallery markup or linked image resources when necessary. Collect every unique image belonging to this exact instrument; do not stop after the first one or two images. If the page says the gallery contains N images, verify that your output contains all N usable image URLs, or explain why a specific image cannot be used. Avoid every source URL already recorded below.
 
@@ -120,6 +128,25 @@ For a metadata-only repair imageUrls may be empty. If you cannot complete the in
 """
 
 
+def discovery_instructions(settings: dict[str, object]) -> str:
+    try:
+        values = api_request(settings, "/config")
+    except (OSError, ValueError, RuntimeError) as error:
+        raise RuntimeError("Unable to read AI_SEARCH_INSTRUCTIONS; skipping discovery this cycle") from error
+    if not isinstance(values, list):
+        raise RuntimeError("Config API did not return a list; skipping discovery this cycle")
+    for value in values:
+        if isinstance(value, dict) and value.get("name") == "AI_SEARCH_INSTRUCTIONS":
+            instructions = value.get("value")
+            if not isinstance(instructions, str):
+                raise RuntimeError("AI_SEARCH_INSTRUCTIONS is not a string; skipping discovery this cycle")
+            if not instructions.strip():
+                LOG.info("AI_SEARCH_INSTRUCTIONS is empty; using default discovery instructions")
+            return instructions
+    LOG.warning("AI_SEARCH_INSTRUCTIONS is missing; using default discovery instructions")
+    return ""
+
+
 def run_once(settings: dict[str, object]) -> None:
     state_path = Path(settings["state_dir"]) / "discovery-state.json"
     state = load_state(state_path)
@@ -128,7 +155,7 @@ def run_once(settings: dict[str, object]) -> None:
         raise RuntimeError("Reparation request API did not return a list")
     repair = requests[0] if requests else None
     listing = api_request(settings, f"/listing/{repair['listingId']}") if repair else None
-    task_prompt = repair_prompt(repair, listing) if repair else prompt(state)
+    task_prompt = repair_prompt(repair, listing) if repair else prompt(state, discovery_instructions(settings))
     with tempfile.TemporaryDirectory(dir=settings["workspace"]) as directory:
         result = subprocess.run(
             list(settings["codex_command"]), cwd=directory, input=task_prompt, text=True,

@@ -63,7 +63,8 @@ class RepairTests(unittest.TestCase):
         import_direct.return_value = {"instrumentId": 1}
         run_once(self.settings)
         import_direct.assert_called_once()
-        api.assert_called_once_with(self.settings, "/reparation-requests")
+        self.assertEqual([call.args[1] for call in api.call_args_list],
+                         ["/reparation-requests", "/config"])
 
     @patch("src.main.import_direct")
     @patch("src.main.subprocess.run")
