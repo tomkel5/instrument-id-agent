@@ -41,7 +41,7 @@ def load_state(path: Path) -> dict[str, object]:
         return {"sources": [], "runs": []}
 
 
-def prompt(state: dict[str, object], search_instructions: str = "") -> str:
+def prompt(state: dict[str, object], search_instructions: str = "", batch_size: int = 1) -> str:
     configured_instructions = (
         "\nConfigured discovery instructions (AI_SEARCH_INSTRUCTIONS):\n"
         + search_instructions
@@ -49,15 +49,19 @@ def prompt(state: dict[str, object], search_instructions: str = "") -> str:
         "duplicate-avoidance, and output requirements below.\n"
         if search_instructions.strip() else ""
     )
-    return f"""Find one publicly accessible web page featuring a specific violin that is likely not already in the Instrument ID database.
+    output_format = (
+        "a single JSON object" if batch_size == 1 else
+        f"a JSON array of up to {batch_size} objects with distinct source URIs (never repeat a listing)"
+    )
+    return f"""Find up to {batch_size} distinct suitable publicly accessible web pages, each featuring a specific violin that is likely not already in the Instrument ID database.
 {configured_instructions}
 
-Use live web search. Prefer a page from a dealer, maker, auction house, or private owner over a museum or library collection. Do not invent facts, URLs, or image URLs. Open the source page and inspect its complete image gallery, including gallery markup or linked image resources when necessary. Collect every unique image belonging to this exact instrument; do not stop after the first one or two images. If the page says the gallery contains N images, verify that your output contains all N usable image URLs, or explain why a specific image cannot be used. Avoid every source URL already recorded below.
+Use live web search. Prefer a page from a dealer, maker, auction house, or private owner over a museum or library collection. Do not invent facts, URLs, or image URLs. Open the source page and inspect its complete image gallery, including gallery markup or linked image resources when necessary. Collect every unique image belonging to this exact instrument; do not stop after the first one or two images. If the page says the gallery contains N images, verify that your output contains all N usable image URLs, or explain why a specific image cannot be used. Avoid every source URL in the sources list below. Failed candidates recorded in runs or discoveredSources may be retried.
 
 Previous discovery state:
 {json.dumps(state, indent=2, sort_keys=True)}
 
-If you find a suitable violin, finish with exactly one line beginning with DIRECT_IMPORT_JSON: followed by a single JSON object with these fields:
+If you find a suitable violin, finish with exactly one line beginning with DIRECT_IMPORT_JSON: followed by {output_format} with these fields for each listing:
 {{"uri":"source page URL","title":"listing title","description":"evidence-based description","imageUrls":["absolute image URL"]}}
 
 The source page must be the URI. Include only directly usable HTTP or HTTPS image URLs. Before responding, compare the output list with the page's complete gallery and remove duplicates while retaining every distinct view. If no suitable candidate can be found, finish with exactly: DIRECT_IMPORT_JSON: null.
@@ -71,6 +75,10 @@ def candidate(output: str, allow_empty_images: bool = False) -> dict[str, object
     value = json.loads(match.group(1))
     if value is None:
         return None
+    return validate_candidate(value, allow_empty_images)
+
+
+def validate_candidate(value: object, allow_empty_images: bool = False) -> dict[str, object]:
     if not isinstance(value, dict):
         raise RuntimeError("DIRECT_IMPORT_JSON must be an object or null")
     for key in ("uri", "title", "description"):
@@ -128,13 +136,20 @@ For a metadata-only repair imageUrls may be empty. If you cannot complete the in
 """
 
 
-def discovery_instructions(settings: dict[str, object]) -> str:
+def discovery_config(settings: dict[str, object]) -> tuple[str, int]:
     try:
         values = api_request(settings, "/config")
     except (OSError, ValueError, RuntimeError) as error:
-        raise RuntimeError("Unable to read AI_SEARCH_INSTRUCTIONS; skipping discovery this cycle") from error
+        raise RuntimeError("Unable to read discovery configuration; skipping discovery this cycle") from error
     if not isinstance(values, list):
         raise RuntimeError("Config API did not return a list; skipping discovery this cycle")
+    batch_size = 1
+    for value in values:
+        if isinstance(value, dict) and value.get("name") == "AI_SEARCH_BATCH_SIZE":
+            raw = value.get("value")
+            if not isinstance(raw, str) or not re.fullmatch(r"[0-9]*[1-9][0-9]*", raw):
+                raise RuntimeError("AI_SEARCH_BATCH_SIZE must be a positive integer; skipping discovery this cycle")
+            batch_size = int(raw)
     for value in values:
         if isinstance(value, dict) and value.get("name") == "AI_SEARCH_INSTRUCTIONS":
             instructions = value.get("value")
@@ -142,9 +157,67 @@ def discovery_instructions(settings: dict[str, object]) -> str:
                 raise RuntimeError("AI_SEARCH_INSTRUCTIONS is not a string; skipping discovery this cycle")
             if not instructions.strip():
                 LOG.info("AI_SEARCH_INSTRUCTIONS is empty; using default discovery instructions")
-            return instructions
+            return instructions, batch_size
     LOG.warning("AI_SEARCH_INSTRUCTIONS is missing; using default discovery instructions")
-    return ""
+    return "", batch_size
+
+
+def discovery_instructions(settings: dict[str, object]) -> str:
+    return discovery_config(settings)[0]
+
+
+def save_state(path: Path, state: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def discover_results(settings: dict[str, object], state: dict[str, object], path: Path,
+                     output: str, batch_size: int, run: dict[str, object]) -> None:
+    match = re.search(r"^DIRECT_IMPORT_JSON:\s*(.+)$", output, re.IGNORECASE | re.MULTILINE)
+    if not match:
+        raise RuntimeError("Codex output did not include DIRECT_IMPORT_JSON")
+    payload = json.loads(match.group(1))
+    values = payload if isinstance(payload, list) else ([] if payload is None else [payload])
+    outcomes = []
+    run["results"] = outcomes
+    run["result"] = "no-candidate" if not values else "batch-completed"
+    runs = state.setdefault("runs", [])
+    runs.append(run)
+    del runs[:-100]
+    seen = set(state.setdefault("sources", []))
+    for raw in values[:batch_size]:
+        outcome = {"candidate": raw}
+        outcomes.append(outcome)
+        uri = raw.get("uri") if isinstance(raw, dict) else None
+        discovered = state.setdefault("discoveredSources", [])
+        if isinstance(uri, str) and uri.strip() and uri not in discovered:
+            discovered.append(uri)
+        try:
+            value = validate_candidate(raw)
+        except (ValueError, RuntimeError) as error:
+            outcome.update(result="validation-failed", error=str(error))
+        else:
+            uri = value["uri"]
+            if uri in seen:
+                outcome["result"] = "duplicate-source"
+            else:
+                seen.add(uri)
+                try:
+                    response = import_direct(settings, value)
+                except (OSError, ValueError, RuntimeError) as error:
+                    outcome.update(result="import-failed", error=str(error))
+                else:
+                    outcome["response"] = response
+                    outcome["result"] = "duplicate" if isinstance(response, dict) and response.get("duplicate") else "imported"
+                    state["sources"].append(uri)
+        # Persist each outcome before processing the next candidate.
+        save_state(path, state)
+    if len(outcomes) == 1:
+        run.update(outcomes[0])
+    save_state(path, state)
+    LOG.info("Discovery completed: %s", run["result"])
 
 
 def run_once(settings: dict[str, object]) -> None:
@@ -155,7 +228,11 @@ def run_once(settings: dict[str, object]) -> None:
         raise RuntimeError("Reparation request API did not return a list")
     repair = requests[0] if requests else None
     listing = api_request(settings, f"/listing/{repair['listingId']}") if repair else None
-    task_prompt = repair_prompt(repair, listing) if repair else prompt(state, discovery_instructions(settings))
+    if repair:
+        task_prompt = repair_prompt(repair, listing)
+    else:
+        instructions, batch_size = discovery_config(settings)
+        task_prompt = prompt(state, instructions, batch_size)
     with tempfile.TemporaryDirectory(dir=settings["workspace"]) as directory:
         result = subprocess.run(
             list(settings["codex_command"]), cwd=directory, input=task_prompt, text=True,
@@ -163,8 +240,11 @@ def run_once(settings: dict[str, object]) -> None:
         )
     if result.returncode:
         raise RuntimeError(result.stderr[-4000:] or f"Codex exited with {result.returncode}")
-    value = candidate(result.stdout, allow_empty_images=repair is not None)
     run: dict[str, object] = {"completedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    if repair is None:
+        discover_results(settings, state, state_path, result.stdout, batch_size, run)
+        return
+    value = candidate(result.stdout, allow_empty_images=True)
     if repair is not None:
         run["requestId"] = repair["id"]
         if value is None:
@@ -175,22 +255,11 @@ def run_once(settings: dict[str, object]) -> None:
             query = urlencode({"expectedUpdatedAt": repair["updatedAt"]})
             api_request(settings, f"/reparation-request/{repair['id']}?{query}", "DELETE")
             run["result"] = "repaired"
-    elif value is None:
-        run["result"] = "no-candidate"
-    else:
-        response = import_direct(settings, value)
-        run["result"] = "duplicate" if isinstance(response, dict) and response.get("duplicate") else "imported"
-        run["candidate"] = value
-        run["response"] = response
-        sources = state.setdefault("sources", [])
-        if isinstance(sources, list) and value["uri"] not in sources:
-            sources.append(value["uri"])
     runs = state.setdefault("runs", [])
     if isinstance(runs, list):
         runs.append(run)
         del runs[:-100]
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    save_state(state_path, state)
     LOG.info("Discovery completed: %s", run["result"])
 
 

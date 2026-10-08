@@ -6,7 +6,7 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import call, patch
 
-from src.main import discovery_instructions, prompt, run_once
+from src.main import discovery_config, discovery_instructions, prompt, run_once
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -77,6 +77,79 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://api.test/api/config")
         self.assertEqual(request.get_method(), "GET")
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+
+    @patch("src.main.api_request")
+    def test_batch_configuration_defaults_and_validation(self, api):
+        for settings, expected in (([], 1), ([{"name": "AI_SEARCH_BATCH_SIZE", "value": "1"}], 1),
+                                   ([{"name": "AI_SEARCH_BATCH_SIZE", "value": "12"}], 12)):
+            api.return_value = settings
+            self.assertEqual(discovery_config(self.settings)[1], expected)
+        for value in (None, 2, "0", "-1", "1.5", "bad", ""):
+            api.return_value = [{"name": "AI_SEARCH_BATCH_SIZE", "value": value}]
+            with self.assertRaisesRegex(RuntimeError, "positive integer"):
+                discovery_config(self.settings)
+
+    def listing(self, number):
+        return {"uri": f"https://example.test/{number}", "title": "V", "description": "D",
+                "imageUrls": ["https://example.test/1.jpg", "https://example.test/2.jpg"]}
+
+    @patch("src.main.import_direct")
+    @patch("src.main.subprocess.run")
+    @patch("src.main.api_request")
+    def test_batch_persists_success_failure_and_duplicate_results(self, api, codex, importer):
+        api.side_effect = [[], [{"name": "AI_SEARCH_BATCH_SIZE", "value": "6"}]]
+        invalid = {**self.listing(2), "imageUrls": []}
+        values = [self.listing(1), invalid, self.listing(3), self.listing(4), self.listing(1), self.listing(5)]
+        codex.return_value = subprocess.CompletedProcess([], 0, "DIRECT_IMPORT_JSON: " + json.dumps(values), "")
+        def importing(settings, value):
+            # Earlier successful imports are durable before the next request.
+            if value["uri"].endswith("/3"):
+                state = json.loads((self.settings["state_dir"] / "discovery-state.json").read_text())
+                self.assertEqual(state["sources"], [self.listing(1)["uri"]])
+                raise RuntimeError("download failed")
+            return {"duplicate": True} if value["uri"].endswith("/4") else {"instrumentId": value["uri"]}
+        importer.side_effect = importing
+        run_once(self.settings)
+        self.assertIn("Find up to 6", codex.call_args.kwargs["input"])
+        self.assertIn("JSON array", codex.call_args.kwargs["input"])
+        state = json.loads((self.settings["state_dir"] / "discovery-state.json").read_text())
+        outcomes = state["runs"][0]["results"]
+        self.assertEqual([v["result"] for v in outcomes],
+                         ["imported", "validation-failed", "import-failed", "duplicate", "duplicate-source", "imported"])
+        self.assertEqual(len(state["discoveredSources"]), 5)
+        self.assertEqual(state["sources"], [self.listing(i)["uri"] for i in (1, 4, 5)])
+        self.assertEqual(importer.call_count, 4)
+        self.assertEqual(outcomes[0]["response"], {"instrumentId": self.listing(1)["uri"]})
+        self.assertEqual(outcomes[-1]["candidate"]["imageUrls"], self.listing(5)["imageUrls"])
+        # A later cycle can retry a failed source; imported sources stay deduplicated.
+        api.side_effect = [[], [{"name": "AI_SEARCH_BATCH_SIZE", "value": "2"}]]
+        codex.return_value = subprocess.CompletedProcess([], 0, "DIRECT_IMPORT_JSON: " + json.dumps(
+            [self.listing(1), self.listing(3)]), "")
+        importer.side_effect = None
+        importer.return_value = {"instrumentId": 3}
+        importer.reset_mock()
+        run_once(self.settings)
+        importer.assert_called_once_with(self.settings, self.listing(3))
+        state = json.loads((self.settings["state_dir"] / "discovery-state.json").read_text())
+        self.assertEqual(len(state["runs"]), 2)
+        self.assertIn(self.listing(3)["uri"], state["sources"])
+
+
+    @patch("src.main.import_direct")
+    @patch("src.main.subprocess.run")
+    @patch("src.main.api_request")
+    def test_batch_limit_and_previous_sources(self, api, codex, importer):
+        path = self.settings["state_dir"] / "discovery-state.json"
+        path.write_text(json.dumps({"sources": [self.listing(1)["uri"]], "runs": []}))
+        for size in (None, "1", "2"):
+            api.side_effect = [[], [] if size is None else [{"name": "AI_SEARCH_BATCH_SIZE", "value": size}]]
+            codex.return_value = subprocess.CompletedProcess([], 0, "DIRECT_IMPORT_JSON: " + json.dumps(
+                [self.listing(1), self.listing(2), self.listing(3)]), "")
+            importer.return_value = {"instrumentId": 2}
+            importer.reset_mock()
+            run_once(self.settings)
+            self.assertEqual(importer.call_count, 1 if size == "2" else 0)
+            self.assertIn(f"Find up to {size or '1'}", codex.call_args.kwargs["input"])
 
 
 if __name__ == "__main__":

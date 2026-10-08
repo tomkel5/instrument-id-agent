@@ -12,8 +12,8 @@ succeeds. Incomplete repairs and failures leave the request active. If the notes
 changed during processing, archival returns 409 and the request remains active
 for the next run.
 
-If there are no active requests, the worker discovers and imports at most one new
-DIRECT listing. A failed request lookup never falls back to discovery. After each
+If there are no active requests, the worker discovers and imports up to `AI_SEARCH_BATCH_SIZE` new
+DIRECT listings (default `1`). A failed request lookup never falls back to discovery. After each
 cycle the worker waits `DISCOVERY_INTERVAL_SECONDS` (default 600) before starting
 another cycle, including when a repair fails or takes longer than ten minutes.
 
@@ -25,7 +25,20 @@ duplicate avoidance, and the `DIRECT_IMPORT_JSON` output contract. An empty or
 whitespace-only value uses the default discovery instructions and logs at INFO;
 a missing setting uses those defaults and logs a warning. A failed config lookup
 or malformed response skips discovery for that cycle and logs the failure; the
-next cycle retries. Repairs neither read nor use this setting.
+next cycle retries. `AI_SEARCH_BATCH_SIZE` is read in the same request on every discovery run. Missing
+batch size defaults to `1`; malformed or nonpositive values skip the cycle. For
+larger batches Codex returns a JSON array; each candidate must satisfy the same
+complete-gallery requirements. Only the first configured number of candidates
+are processed. Previously imported sources and repeated URIs are skipped.
+
+Each candidate outcome and discovered URI is saved atomically before the next
+candidate is processed. Validation and import failures are recorded and do not
+stop the remaining candidates. Successful imports and API duplicates enter
+`sources`; failed candidates remain eligible for a later retry. `discoveredSources`
+records all supplied source URIs and `runs[].results` records validation failures,
+import failures, skipped duplicates, and each API response. Malformed JSON or a
+missing output marker fails the cycle before any imports. Repairs neither read
+nor use either discovery setting.
 
 `INSTRUMENT_ID_API_URL` remains the full ingestion endpoint, for example
 `http://instrument-id-ingester:8080/api/ingest`; repair endpoints are derived from
