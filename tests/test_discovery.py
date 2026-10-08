@@ -11,6 +11,9 @@ from src.main import discovery_config, discovery_instructions, prompt, run_once
 
 class DiscoveryTests(unittest.TestCase):
     def setUp(self):
+        maker_patch = patch("src.main.discovery_makers", return_value=[])
+        maker_patch.start()
+        self.addCleanup(maker_patch.stop)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.settings = {"state_dir": Path(directory.name), "workspace": Path(directory.name),

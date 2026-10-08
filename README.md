@@ -31,6 +31,25 @@ larger batches Codex returns a JSON array; each candidate must satisfy the same
 complete-gallery requirements. Only the first configured number of candidates
 are processed. Previously imported sources and repeated URIs are skipped.
 
+New discovery also reads every page of `GET /api/makers` to supply existing IDs,
+names, and search terms to the search agent. An unavailable or malformed catalog
+is discarded; discovery continues without assigning makers. Repairs do not read
+the catalog. Search terms only aid identity lookup.
+
+The agent must open the listing source and report instrument-specific maker
+evidence, supporting quotations and URLs, attribution, confidence, plausible
+alternatives, and reasoning in `makerAssessment`. Only verified, high-confidence
+attributions with source-page evidence, no alternatives, and a unique catalog
+name matching the proposed numeric ID are included as `makerId` in the DIRECT
+import. Ambiguous attribution language in evidence also prevents assignment.
+Seller names, snippets, image appearance, label text alone, and unverified
+attributions cannot establish authorship. Missing assessments and unmatched or
+ambiguous identities preserve the usual import with no maker ID.
+`runs[].results[].makerDecision` records whether a maker was assigned and the
+assessment and decision reason; assessment fields are excluded from API payloads.
+The configured API credential is redacted from candidate and assessment state,
+and catalog failures are logged without response bodies or exception details.
+
 Each candidate outcome and discovered URI is saved atomically before the next
 candidate is processed. Validation and import failures are recorded and do not
 stop the remaining candidates. Successful imports and API duplicates enter

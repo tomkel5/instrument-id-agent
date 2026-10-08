@@ -64,7 +64,7 @@ class RepairTests(unittest.TestCase):
         run_once(self.settings)
         import_direct.assert_called_once()
         self.assertEqual([call.args[1] for call in api.call_args_list],
-                         ["/reparation-requests", "/config"])
+                         ["/reparation-requests", "/config", "/makers?page=0&size=100&sort=id,asc"])
 
     @patch("src.main.import_direct")
     @patch("src.main.subprocess.run")
