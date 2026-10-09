@@ -2,6 +2,7 @@ image:
   repository: 10.0.0.230:5000/instrument-id/agent
   tag: latest
   pullPolicy: IfNotPresent
+enabled: false
 intervalSeconds: 600
 apiUrl: http://instrument-id-ingester:8080/api/ingest
 apiKey: ""

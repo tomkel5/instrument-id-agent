@@ -4,7 +4,7 @@ metadata:
   name: {{ include "instrument-id-agent.fullname" . }}
   labels: {{- include "instrument-id-agent.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ if .Values.enabled }}1{{ else }}0{{ end }}
   strategy: {type: Recreate}
   selector:
     matchLabels: {{- include "instrument-id-agent.selectorLabels" . | nindent 6 }}
