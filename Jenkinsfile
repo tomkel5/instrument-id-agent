@@ -24,7 +24,7 @@ pipeline {
           sh '''
             set +x
             kubectl create secret generic "$RELEASE-auth" --namespace "$NAMESPACE" --from-file=auth.json="$CODEX_AUTH_FILE" --dry-run=client --output=yaml | kubectl apply -f -
-            helm upgrade --install "$RELEASE" helm/instrument-id-agent --namespace "$NAMESPACE" --set-string image.tag="$IMAGE_TAG" --set-string apiKey="$INSTRUMENT_ID_API_KEY" --wait --timeout 3m
+            helm upgrade --install "$RELEASE" helm/instrument-id-agent --namespace "$NAMESPACE" --set-string image.tag="$IMAGE_TAG" --set-string apiKey="$INSTRUMENT_ID_API_KEY" --set enabled=true --set intervalSeconds=1800 --wait --timeout 3m
             kubectl rollout status deployment/"$RELEASE" --namespace "$NAMESPACE" --timeout=3m
           '''
         }
