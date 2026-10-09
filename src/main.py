@@ -86,7 +86,7 @@ def config() -> dict[str, object]:
         "workspace": Path(os.environ.get("WORKSPACE_DIR", "/workspace")),
         "codex_command": (
             "codex", "--search", "exec", "--model",
-            os.environ.get("CODEX_MODEL", "codex-mini-latest"),
+            os.environ.get("CODEX_MODEL", "gpt-6-luna"),
             "--sandbox", "read-only", "--skip-git-repo-check", "-",
         ),
     }
