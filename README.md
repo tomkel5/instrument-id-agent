@@ -60,6 +60,12 @@ import failures, skipped duplicates, and each API response. Malformed JSON or a
 missing output marker fails the cycle before any imports. Repairs neither read
 nor use either discovery setting.
 
+Scheduled searches use the `codex-mini-latest` model by default, configurable
+with `CODEX_MODEL`. The complete discovery state remains on the persistent
+volume, but only the known source URI list and compact recent outcomes are sent
+in the next search prompt. This prevents old descriptions and image galleries
+from consuming the model context on every run.
+
 `INSTRUMENT_ID_API_URL` remains the full ingestion endpoint, for example
 `http://instrument-id-ingester:8080/api/ingest`; repair endpoints are derived from
 that service URL. All API calls use `INSTRUMENT_ID_API_KEY` as a bearer credential.

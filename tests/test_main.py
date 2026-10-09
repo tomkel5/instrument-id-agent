@@ -27,5 +27,18 @@ class MainTests(unittest.TestCase):
             },
         )
 
+    def test_prompt_compacts_old_run_payloads(self):
+        state = {
+            "sources": ["https://example.test/seen"],
+            "runs": [{"completedAt": "now", "result": "imported", "candidate": {
+                "uri": "https://example.test/old",
+                "description": "This large description should remain on disk only." * 100,
+            }}],
+        }
+        value = prompt(state)
+        self.assertIn("https://example.test/seen", value)
+        self.assertNotIn("This large description should remain on disk only", value)
+        self.assertIn("full state remains on disk", value)
+
 if __name__ == "__main__":
     unittest.main()
