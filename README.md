@@ -15,7 +15,8 @@ for the next run.
 If there are no active requests, the worker discovers and imports up to `AI_SEARCH_BATCH_SIZE` new
 DIRECT listings (default `1`). A failed request lookup never falls back to discovery. After each
 cycle the worker waits `DISCOVERY_INTERVAL_SECONDS` (default 600) before starting
-another cycle, including when a repair fails or takes longer than ten minutes.
+another cycle, including when a repair fails or takes longer than thirty minutes.
+The first cycle starts immediately when the worker process starts.
 
 Before every new listing discovery run, the worker reads `GET /api/config` and
 includes `AI_SEARCH_INSTRUCTIONS` in the Codex search prompt. Changes take effect
