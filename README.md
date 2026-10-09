@@ -63,5 +63,21 @@ nor use either discovery setting.
 `http://instrument-id-ingester:8080/api/ingest`; repair endpoints are derived from
 that service URL. All API calls use `INSTRUMENT_ID_API_KEY` as a bearer credential.
 
+## Codex usage logs
+
+Each search or repair invocation writes a JSON `codex_usage` record to the pod
+log. The Instrument ID cluster's Alloy collector forwards it to the shared Loki
+used by Grafana. In Grafana Explore, select the Homelab Loki data source and
+use:
+
+```logql
+{namespace="default", app="instrument-id-agent"} | json | event="codex_usage"
+```
+
+The parsed fields include `agent`, `operation`, `duration_ms`, `input_chars`,
+`output_chars`, `input_tokens`, `cached_input_tokens`, `output_tokens`,
+`total_tokens`, and `return_code`. The same usage object is stored with each
+completed run in `discovery-state.json`.
+
 Deploy the listing service migration, then the ingester, then the UI and worker.
 Run worker tests with `python -m unittest discover -s tests` from this repository.

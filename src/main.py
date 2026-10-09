@@ -16,6 +16,64 @@ from urllib.parse import urlencode
 LOG = logging.getLogger(__name__)
 
 
+def _codex_usage(events: list[dict[str, object]]) -> dict[str, int | None]:
+    usage: dict[str, int | None] = {
+        "input_tokens": None,
+        "cached_input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+    }
+    for event in events:
+        candidate = event.get("usage")
+        if not isinstance(candidate, dict):
+            continue
+        for key in usage:
+            value = candidate.get(key)
+            if type(value) is int:
+                usage[key] = value
+    if usage["total_tokens"] is None and usage["input_tokens"] is not None and usage["output_tokens"] is not None:
+        usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+    return usage
+
+
+def _run_codex(settings: dict[str, object], prompt_text: str, operation: str) -> tuple[subprocess.CompletedProcess[str], dict[str, int | None]]:
+    started = time.monotonic()
+    # The command ends in '-' so options must precede it.
+    command = [*settings["codex_command"][:-1], "--json", settings["codex_command"][-1]]
+    with tempfile.TemporaryDirectory(dir=settings["workspace"]) as directory:
+        result = subprocess.run(
+            command, cwd=directory, input=prompt_text, text=True,
+            capture_output=True, check=False,
+        )
+    events: list[dict[str, object]] = []
+    final_messages: list[str] = []
+    for line in result.stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        events.append(event)
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+            final_messages.append(item["text"])
+    usage = _codex_usage(events)
+    LOG.info(json.dumps({
+        "event": "codex_usage",
+        "agent": "search",
+        "operation": operation,
+        "duration_ms": round((time.monotonic() - started) * 1000),
+        "input_chars": len(prompt_text),
+        "output_chars": len(result.stdout),
+        "return_code": result.returncode,
+        **usage,
+    }, sort_keys=True))
+    if events and final_messages:
+        result.stdout = "\n".join(final_messages)
+    return result, usage
+
+
 def config() -> dict[str, object]:
     interval = float(os.environ.get("DISCOVERY_INTERVAL_SECONDS", "600"))
     if interval <= 0:
@@ -316,14 +374,15 @@ def run_once(settings: dict[str, object]) -> None:
         instructions, batch_size = discovery_config(settings)
         makers = discovery_makers(settings)
         task_prompt = prompt(state, instructions, batch_size, makers)
-    with tempfile.TemporaryDirectory(dir=settings["workspace"]) as directory:
-        result = subprocess.run(
-            list(settings["codex_command"]), cwd=directory, input=task_prompt, text=True,
-            capture_output=True, check=False,
-        )
+    result, usage = _run_codex(settings, task_prompt, "repair" if repair else "discovery")
     if result.returncode:
         raise RuntimeError(result.stderr[-4000:] or f"Codex exited with {result.returncode}")
-    run: dict[str, object] = {"completedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    run: dict[str, object] = {
+        "completedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "promptChars": len(task_prompt),
+        "outputChars": len(result.stdout),
+        "usage": usage,
+    }
     if repair is None:
         discover_results(settings, state, state_path, result.stdout, batch_size, run, makers)
         return
@@ -347,7 +406,7 @@ def run_once(settings: dict[str, object]) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(message)s")
     settings = config()
     Path(settings["workspace"]).mkdir(parents=True, exist_ok=True)
     LOG.info("Instrument ID agent started; interval=%ss", settings["interval"])

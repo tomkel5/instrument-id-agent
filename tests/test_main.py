@@ -1,6 +1,6 @@
 import json
 import unittest
-from src.main import candidate, prompt
+from src.main import _codex_usage, candidate, prompt
 
 class MainTests(unittest.TestCase):
     def test_candidate_deduplicates_images(self):
@@ -11,6 +11,21 @@ class MainTests(unittest.TestCase):
         value = prompt({"sources": [], "runs": []})
         self.assertIn("complete image gallery", value)
         self.assertIn("every unique image", value)
+
+    def test_codex_usage_reads_completed_turn(self):
+        self.assertEqual(
+            _codex_usage([{"type": "turn.completed", "usage": {
+                "input_tokens": 1200,
+                "cached_input_tokens": 900,
+                "output_tokens": 80,
+            }}]),
+            {
+                "input_tokens": 1200,
+                "cached_input_tokens": 900,
+                "output_tokens": 80,
+                "total_tokens": 1280,
+            },
+        )
 
 if __name__ == "__main__":
     unittest.main()
