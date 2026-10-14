@@ -8,6 +8,8 @@ import re
 import subprocess
 import tempfile
 import time
+
+# Keep the scheduled worker image rebuildable when deployment credentials rotate.
 import urllib.error
 import urllib.request
 from pathlib import Path
