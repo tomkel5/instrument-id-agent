@@ -8,9 +8,9 @@ request, it processes only the first request using the existing listing from
 `GET /api/listing/{listingId}` and the user's saved notes. It submits the result to
 `PATCH /api/listing/{listingId}` and archives the request with
 `DELETE /api/reparation-request/{id}?expectedUpdatedAt=...` only after the update
-succeeds. Incomplete repairs and failures leave the request active. If the notes
-changed during processing, archival returns 409 and the request remains active
-for the next run.
+succeeds. An incomplete or failed repair is recorded and its request is archived
+so the worker does not retry it forever. If the notes changed during processing,
+archival returns 409 and the request remains active for the next run.
 
 If there are no active requests, the worker discovers and imports up to `AI_SEARCH_BATCH_SIZE` new
 DIRECT listings (default `1`). A failed request lookup never falls back to discovery. After each

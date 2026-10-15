@@ -36,22 +36,27 @@ class RepairTests(unittest.TestCase):
     @patch("src.main.import_direct")
     @patch("src.main.subprocess.run")
     @patch("src.main.api_request")
-    def test_incomplete_repair_remains_active_without_discovery(self, api, codex, import_direct):
-        api.side_effect = [[self.request], self.listing]
+    def test_incomplete_repair_is_archived_without_discovery(self, api, codex, import_direct):
+        api.side_effect = [[self.request], self.listing, None]
         codex.return_value = subprocess.CompletedProcess([], 0, "DIRECT_IMPORT_JSON: null", "")
-        run_once(self.settings)
-        self.assertEqual(api.call_count, 2)
+        with self.assertRaisesRegex(RuntimeError, "could not complete"):
+            run_once(self.settings)
+        self.assertEqual(api.call_count, 3)
+        self.assertIn("/reparation-request/3?", api.call_args_list[-1].args[1])
         import_direct.assert_not_called()
+        state = json.loads((Path(self.directory.name) / "discovery-state.json").read_text())
+        self.assertEqual(state["runs"][0]["result"], "repair-failed")
 
     @patch("src.main.import_direct")
     @patch("src.main.subprocess.run")
     @patch("src.main.api_request")
     def test_failed_update_does_not_archive_or_discover(self, api, codex, import_direct):
-        api.side_effect = [[self.request], self.listing, RuntimeError("image download failed")]
+        api.side_effect = [[self.request], self.listing, RuntimeError("image download failed"), None]
         codex.return_value = subprocess.CompletedProcess([], 0, "DIRECT_IMPORT_JSON: " + json.dumps(self.value), "")
         with self.assertRaises(RuntimeError):
             run_once(self.settings)
-        self.assertEqual(api.call_count, 3)
+        self.assertEqual(api.call_count, 4)
+        self.assertIn("/reparation-request/3?", api.call_args_list[-1].args[1])
         import_direct.assert_not_called()
 
     @patch("src.main.import_direct")

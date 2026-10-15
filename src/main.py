@@ -221,6 +221,11 @@ def api_request(settings: dict[str, object], path: str, method: str = "GET", val
         return json.loads(body) if body else None
 
 
+def archive_repair(settings: dict[str, object], repair: dict[str, object]) -> None:
+    query = urlencode({"expectedUpdatedAt": repair["updatedAt"]})
+    api_request(settings, f"/reparation-request/{repair['id']}?{query}", "DELETE")
+
+
 def discovery_makers(settings: dict[str, object]) -> list[dict[str, object]]:
     """Read the entire catalog; partial or unavailable catalogs cannot establish uniqueness."""
     makers = []
@@ -404,29 +409,50 @@ def run_once(settings: dict[str, object]) -> None:
         instructions, batch_size = discovery_config(settings)
         makers = discovery_makers(settings)
         task_prompt = prompt(state, instructions, batch_size, makers)
-    result, usage = _run_codex(settings, task_prompt, "repair" if repair else "discovery")
-    if result.returncode:
-        raise RuntimeError(result.stderr[-4000:] or f"Codex exited with {result.returncode}")
     run: dict[str, object] = {
         "completedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "promptChars": len(task_prompt),
-        "outputChars": len(result.stdout),
-        "usage": usage,
     }
     if repair is None:
+        result, usage = _run_codex(settings, task_prompt, "discovery")
+        if result.returncode:
+            raise RuntimeError(result.stderr[-4000:] or f"Codex exited with {result.returncode}")
+        run.update(outputChars=len(result.stdout), usage=usage)
         discover_results(settings, state, state_path, result.stdout, batch_size, run, makers)
         return
-    value = candidate(result.stdout, allow_empty_images=True)
-    if repair is not None:
-        run["requestId"] = repair["id"]
+    run["requestId"] = repair["id"]
+    try:
+        result, usage = _run_codex(settings, task_prompt, "repair")
+        run.update(outputChars=len(result.stdout), usage=usage)
+        if result.returncode:
+            raise RuntimeError(result.stderr[-4000:] or f"Codex exited with {result.returncode}")
+        value = candidate(result.stdout, allow_empty_images=True)
         if value is None:
-            run["result"] = "repair-incomplete"
-        else:
-            run["response"] = api_request(settings, f"/listing/{repair['listingId']}", "PATCH",
-                                           {key: value[key] for key in ("title", "description", "imageUrls")})
-            query = urlencode({"expectedUpdatedAt": repair["updatedAt"]})
-            api_request(settings, f"/reparation-request/{repair['id']}?{query}", "DELETE")
-            run["result"] = "repaired"
+            raise RuntimeError("Codex could not complete the repair")
+        run["response"] = api_request(settings, f"/listing/{repair['listingId']}", "PATCH",
+                                       {key: value[key] for key in ("title", "description", "imageUrls")})
+        archive_repair(settings, repair)
+        run["result"] = "repaired"
+    except Exception as error:
+        run["result"] = "repair-failed"
+        run["error"] = str(error)
+        try:
+            archive_repair(settings, repair)
+        except Exception as archive_error:
+            run["archiveError"] = str(archive_error)
+            runs = state.setdefault("runs", [])
+            if isinstance(runs, list):
+                runs.append(run)
+                del runs[:-100]
+            save_state(state_path, state)
+            raise archive_error from error
+        runs = state.setdefault("runs", [])
+        if isinstance(runs, list):
+            runs.append(run)
+            del runs[:-100]
+        save_state(state_path, state)
+        LOG.warning("Repair %s failed and was archived: %s", repair["id"], error)
+        raise
     runs = state.setdefault("runs", [])
     if isinstance(runs, list):
         runs.append(run)
